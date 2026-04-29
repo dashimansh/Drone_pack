@@ -13,34 +13,27 @@ ADronePawn::ADronePawn()
 {
     PrimaryActorTick.bCanEverTick = true;
 
-    // ── Drone Body ────────────────────────────────────────
     DroneMesh = CreateDefaultSubobject
         <USkeletalMeshComponent>(TEXT("DroneMesh"));
     RootComponent = DroneMesh;
     DroneMesh->SetSimulatePhysics(false);
 
-    // ── Propellers ────────────────────────────────────────
     Propeller_FL = CreateDefaultSubobject
-        <USkeletalMeshComponent>(
-            TEXT("Propeller_FL"));
+        <USkeletalMeshComponent>(TEXT("Propeller_FL"));
     Propeller_FL->SetupAttachment(DroneMesh);
 
     Propeller_FR = CreateDefaultSubobject
-        <USkeletalMeshComponent>(
-            TEXT("Propeller_FR"));
+        <USkeletalMeshComponent>(TEXT("Propeller_FR"));
     Propeller_FR->SetupAttachment(DroneMesh);
 
     Propeller_BL = CreateDefaultSubobject
-        <USkeletalMeshComponent>(
-            TEXT("Propeller_BL"));
+        <USkeletalMeshComponent>(TEXT("Propeller_BL"));
     Propeller_BL->SetupAttachment(DroneMesh);
 
     Propeller_BR = CreateDefaultSubobject
-        <USkeletalMeshComponent>(
-            TEXT("Propeller_BR"));
+        <USkeletalMeshComponent>(TEXT("Propeller_BR"));
     Propeller_BR->SetupAttachment(DroneMesh);
 
-    // ── Spring Arm ────────────────────────────────────────
     SpringArm = CreateDefaultSubobject
         <USpringArmComponent>(TEXT("SpringArm"));
     SpringArm->SetupAttachment(DroneMesh);
@@ -52,7 +45,6 @@ ADronePawn::ADronePawn()
     SpringArm->bInheritPitch = false;
     SpringArm->bInheritRoll = false;
 
-    // ── Third Person Camera ───────────────────────────────
     Camera = CreateDefaultSubobject
         <UCameraComponent>(TEXT("Camera"));
     Camera->SetupAttachment(
@@ -60,7 +52,6 @@ ADronePawn::ADronePawn()
         USpringArmComponent::SocketName);
     Camera->SetActive(true);
 
-    // ── FPV Camera ────────────────────────────────────────
     FPVCamera = CreateDefaultSubobject
         <UCameraComponent>(TEXT("FPVCamera"));
     FPVCamera->SetupAttachment(DroneMesh);
@@ -96,9 +87,9 @@ void ADronePawn::Tick(float DeltaTime)
     {
         DetectObstacles();
         LockOnTarget();
+        UpdateAutonomousFlight(DeltaTime);
         CalculateRotorSpeeds(DeltaTime);
         ApplyRotorPhysics(DeltaTime);
-        UpdateAutonomousFlight(DeltaTime);
         SpinPropellers(DeltaTime);
         CheckCrash();
     }
@@ -107,7 +98,6 @@ void ADronePawn::Tick(float DeltaTime)
         FireCooldownTimer -= DeltaTime;
 }
 
-// ── Calculate Rotor Speeds ────────────────────────────────
 void ADronePawn::CalculateRotorSpeeds(
     float DeltaTime)
 {
@@ -116,11 +106,8 @@ void ADronePawn::CalculateRotorSpeeds(
     float CurrentRoll = GetActorRotation().Roll;
     float CurrentYawR = GetActorRotation().Yaw;
 
-    // ── Fast Throttle ─────────────────────────────────────
     TargetAltitude +=
         InputThrottle * 2000.f * DeltaTime;
-
-    // ── Fast Direct Yaw ───────────────────────────────────
     TargetYaw = CurrentYawR +
         InputYaw * 720.f * DeltaTime;
 
@@ -132,8 +119,6 @@ void ADronePawn::CalculateRotorSpeeds(
     float RollOut = PID_Roll.Update(
         InputRoll * MaxTiltAngle - CurrentRoll,
         DeltaTime);
-
-    // ── Fast Direct Yaw Out ───────────────────────────────
     float YawOut = InputYaw * 800.f;
 
     float Base = FMath::Clamp(
@@ -159,7 +144,6 @@ void ADronePawn::CalculateRotorSpeeds(
         0.f, MaxRotorThrust);
 }
 
-// ── Apply Physics ─────────────────────────────────────────
 void ADronePawn::ApplyRotorPhysics(float DeltaTime)
 {
     const float Gravity = -980.f;
@@ -183,8 +167,6 @@ void ADronePawn::ApplyRotorPhysics(float DeltaTime)
     float NewRoll = FMath::Clamp(
         CurrentRot.Roll +
         RollTorque * 0.0005f, -70.f, 70.f);
-
-    // ── Super Fast Yaw ────────────────────────────────────
     float NewYaw = CurrentRot.Yaw +
         InputYaw * 360.f * DeltaTime;
 
@@ -199,7 +181,6 @@ void ADronePawn::ApplyRotorPhysics(float DeltaTime)
         Up * (TotalThrust / Mass) +
         FVector(0, 0, Gravity);
 
-    // ── Obstacle Avoidance ────────────────────────────────
     if (bObstacleAhead)
     {
         Accel -= Forward * AvoidanceStrength * 200.f;
@@ -248,9 +229,19 @@ void ADronePawn::ApplyRotorPhysics(float DeltaTime)
     PreviousVelocity = Velocity;
     Velocity += Accel * DeltaTime;
 
-    // ── Very Low Drag = Fast Movement ─────────────────────
+    // ── Clamp max speed in auto mode ──────────────────────
+    if (bAutoMode)
+    {
+        float MaxAutoSpeed = 600.f;
+        if (Velocity.Size() > MaxAutoSpeed)
+            Velocity = Velocity.GetSafeNormal()
+            * MaxAutoSpeed;
+    }
+
+    // ── Higher drag in auto mode ───────────────────────────
+    float DragAmount = bAutoMode ? 0.3f : 0.05f;
     Velocity *= FMath::Clamp(
-        1.f - 0.05f * DeltaTime, 0.f, 1.f);
+        1.f - DragAmount * DeltaTime, 0.f, 1.f);
 
     FVector NewPos =
         GetActorLocation() + Velocity * DeltaTime;
@@ -262,48 +253,35 @@ void ADronePawn::ApplyRotorPhysics(float DeltaTime)
     SetActorLocation(NewPos);
 }
 
-// ── Spin Propellers By C++ ────────────────────────────────
 void ADronePawn::SpinPropellers(float DeltaTime)
 {
     auto Spin = [&](
         USkeletalMeshComponent* Prop,
-        float& Angle,
-        float  Thrust,
-        bool   bCW)
+        float& Angle, float Thrust, bool bCW)
     {
         if (!Prop) return;
-
         float SpinRate =
-            (Thrust / MaxRotorThrust) *
-            MaxRotorSpeed;
-
+            (Thrust / MaxRotorThrust) * MaxRotorSpeed;
         Angle = FMath::Fmod(
             Angle +
-            (bCW ? SpinRate : -SpinRate) *
-            DeltaTime, 360.f);
-
+            (bCW ? SpinRate : -SpinRate) * DeltaTime,
+            360.f);
         Prop->SetRelativeRotation(
             FRotator(0.f, Angle, 0.f));
     };
 
-    Spin(Propeller_FL,
-        PropellerAngle_FL,
+    Spin(Propeller_FL, PropellerAngle_FL,
         RotorThrust_FL, false);
-    Spin(Propeller_FR,
-        PropellerAngle_FR,
+    Spin(Propeller_FR, PropellerAngle_FR,
         RotorThrust_FR, true);
-    Spin(Propeller_BL,
-        PropellerAngle_BL,
+    Spin(Propeller_BL, PropellerAngle_BL,
         RotorThrust_BL, true);
-    Spin(Propeller_BR,
-        PropellerAngle_BR,
+    Spin(Propeller_BR, PropellerAngle_BR,
         RotorThrust_BR, false);
 }
 
-// ── Ray Tracing ───────────────────────────────────────────
 bool ADronePawn::TraceInDirection(
-    FVector Direction,
-    float   Distance,
+    FVector Direction, float Distance,
     FHitResult& OutHit)
 {
     FVector Start = GetActorLocation();
@@ -317,8 +295,7 @@ bool ADronePawn::TraceInDirection(
             OutHit, Start, End,
             ECC_Visibility, Params);
 
-    DrawDebugLine(
-        GetWorld(), Start, End,
+    DrawDebugLine(GetWorld(), Start, End,
         bHit ? FColor::Red : FColor::Green,
         false, -1.f, 0, 2.f);
 
@@ -344,7 +321,6 @@ void ADronePawn::DetectObstacles()
         -Up, TraceDistance * 0.5f, Hit);
 }
 
-// ── Lock On Target ────────────────────────────────────────
 void ADronePawn::LockOnTarget()
 {
     AActor* NearestTarget = nullptr;
@@ -357,8 +333,7 @@ void ADronePawn::LockOnTarget()
         if (Actor == this) continue;
         if (Actor->IsA<APawn>()) continue;
         if (Cast<AMissileActor>(Actor)) continue;
-        if (Actor->IsRootComponentStatic())
-            continue;
+        if (Actor->IsRootComponentStatic()) continue;
 
         UStaticMeshComponent* Mesh =
             Actor->FindComponentByClass
@@ -383,18 +358,13 @@ void ADronePawn::LockOnTarget()
 
     if (LockedTarget)
     {
-        DrawDebugSphere(
-            GetWorld(),
+        DrawDebugSphere(GetWorld(),
             LockedTarget->GetActorLocation(),
-            100.f, 12, FColor::Red,
-            false, -1.f);
-
-        DrawDebugLine(
-            GetWorld(),
+            100.f, 12, FColor::Red, false, -1.f);
+        DrawDebugLine(GetWorld(),
             GetActorLocation(),
             LockedTarget->GetActorLocation(),
             FColor::Red, false, -1.f, 0, 1.f);
-
         if (GEngine)
             GEngine->AddOnScreenDebugMessage(
                 20, 0.1f, FColor::Red,
@@ -402,7 +372,6 @@ void ADronePawn::LockOnTarget()
     }
 }
 
-// ── Fire Missile ──────────────────────────────────────────
 void ADronePawn::FireMissile()
 {
     if (MissileCount <= 0)
@@ -413,7 +382,6 @@ void ADronePawn::FireMissile()
                 TEXT("NO MISSILES LEFT!"));
         return;
     }
-
     if (FireCooldownTimer > 0.f)
     {
         if (GEngine)
@@ -442,7 +410,6 @@ void ADronePawn::FireMissile()
         Missile->Launch(LockedTarget, MissileSpeed);
         MissileCount--;
         FireCooldownTimer = FireCooldown;
-
         if (GEngine)
             GEngine->AddOnScreenDebugMessage(
                 23, 1.f, FColor::Green,
@@ -452,12 +419,23 @@ void ADronePawn::FireMissile()
     }
 }
 
-// ── Autonomous Flight ─────────────────────────────────────
 void ADronePawn::ToggleAutoMode()
 {
     bAutoMode = !bAutoMode;
     if (bAutoMode)
     {
+        // ── Save direction and start position ─────────────
+        LastWaypointDirection =
+            GetActorForwardVector();
+        LastWaypointDirection.Z = 0.f;
+        LastWaypointDirection.Normalize();
+
+        // ── First waypoint starts from drone ─────────────
+        LastWaypointPosition = GetActorLocation();
+
+        // ── Reset velocity ────────────────────────────────
+        Velocity = FVector::ZeroVector;
+
         SetWaypointAhead();
         if (GEngine)
             GEngine->AddOnScreenDebugMessage(
@@ -467,6 +445,11 @@ void ADronePawn::ToggleAutoMode()
     else
     {
         bWaypointSet = false;
+        InputThrottle = 0.f;
+        InputPitch = 0.f;
+        InputRoll = 0.f;
+        InputYaw = 0.f;
+        Velocity = FVector::ZeroVector;
         if (GEngine)
             GEngine->AddOnScreenDebugMessage(
                 30, 2.f, FColor::Yellow,
@@ -474,17 +457,23 @@ void ADronePawn::ToggleAutoMode()
     }
 }
 
+// ── Waypoints chain from each other ───────────────────────
+// NOT from drone position — keeps straight line
 void ADronePawn::SetWaypointAhead()
 {
     CurrentWaypoint =
-        GetActorLocation() +
-        GetActorForwardVector() * WaypointDistance;
+        LastWaypointPosition +
+        LastWaypointDirection * WaypointDistance;
     CurrentWaypoint.Z = GetActorLocation().Z;
+
+    // ── Save as next origin ───────────────────────────────
+    LastWaypointPosition = CurrentWaypoint;
+
     bWaypointSet = true;
 
-    DrawDebugSphere(
-        GetWorld(), CurrentWaypoint,
-        150.f, 12, FColor::Cyan, false, 3.f);
+    DrawDebugSphere(GetWorld(),
+        CurrentWaypoint, 150.f, 12,
+        FColor::Cyan, false, 3.f);
 }
 
 bool ADronePawn::IsWaypointReached()
@@ -492,7 +481,7 @@ bool ADronePawn::IsWaypointReached()
     if (!bWaypointSet) return false;
     return FVector::Dist(
         GetActorLocation(),
-        CurrentWaypoint) < WaypointReachRadius;
+        CurrentWaypoint) < 500.f;
 }
 
 void ADronePawn::SteerAroundObstacle()
@@ -523,8 +512,13 @@ void ADronePawn::UpdateAutonomousFlight(
 {
     if (!bAutoMode || !bWaypointSet) return;
 
+    float DistToWaypoint = FVector::Dist(
+        GetActorLocation(), CurrentWaypoint);
+
     if (IsWaypointReached())
     {
+        // ── Reset velocity on each waypoint ───────────────
+        Velocity = FVector::ZeroVector;
         SetWaypointAhead();
         if (GEngine)
             GEngine->AddOnScreenDebugMessage(
@@ -536,25 +530,62 @@ void ADronePawn::UpdateAutonomousFlight(
     SteerAroundObstacle();
 
     FVector ToWaypoint =
-        (CurrentWaypoint - GetActorLocation())
-        .GetSafeNormal();
+        CurrentWaypoint - GetActorLocation();
+    FVector ToWaypointNorm = ToWaypoint;
+    ToWaypointNorm.Normalize();
 
-    Velocity += ToWaypoint * AutoSpeed * DeltaTime;
-    Velocity.Z +=
-        (CurrentWaypoint.Z - GetActorLocation().Z)
-        * 2.f * DeltaTime;
+    FVector ToWaypointFlat = ToWaypoint;
+    ToWaypointFlat.Z = 0.f;
+    ToWaypointFlat.Normalize();
 
-    DrawDebugLine(
-        GetWorld(),
+    float TargetYawAngle =
+        FMath::RadiansToDegrees(
+            FMath::Atan2(
+                ToWaypointFlat.Y,
+                ToWaypointFlat.X));
+
+    float YawDiff =
+        FMath::FindDeltaAngleDegrees(
+            GetActorRotation().Yaw,
+            TargetYawAngle);
+
+    // ── Yaw toward waypoint ───────────────────────────────
+    InputYaw = FMath::Clamp(
+        YawDiff / 10.f, -1.f, 1.f);
+
+    // ── Pitch forward when aligned ────────────────────────
+    float YawAligned = FMath::Max(0.f,
+        1.f - FMath::Abs(YawDiff) / 20.f);
+    InputPitch = FMath::Clamp(
+        YawAligned * -1.0f, -1.f, 0.f);
+
+    // ── Roll into turns ───────────────────────────────────
+    InputRoll = FMath::Clamp(
+        YawDiff / 45.f, -1.f, 1.f);
+
+    // ── Throttle ──────────────────────────────────────────
+    float AltDiff =
+        CurrentWaypoint.Z - GetActorLocation().Z;
+    InputThrottle = FMath::Clamp(
+        AltDiff / 200.f + 0.6f, 0.f, 1.f);
+
+    // ── Speed control — slow near waypoint ────────────────
+    float TargetSpeed = FMath::Clamp(
+        DistToWaypoint * 0.5f, 100.f, AutoSpeed);
+
+    // ── Smoothly drive velocity to waypoint ───────────────
+    FVector TargetVel = ToWaypointNorm * TargetSpeed;
+    Velocity = FMath::VInterpTo(
+        Velocity, TargetVel, DeltaTime, 3.f);
+
+    DrawDebugLine(GetWorld(),
         GetActorLocation(), CurrentWaypoint,
         FColor::Cyan, false, -1.f, 0, 3.f);
-
-    DrawDebugSphere(
-        GetWorld(), CurrentWaypoint,
-        150.f, 12, FColor::Cyan, false, -1.f);
+    DrawDebugSphere(GetWorld(),
+        CurrentWaypoint, 150.f, 12,
+        FColor::Cyan, false, -1.f);
 }
 
-// ── Crash ─────────────────────────────────────────────────
 void ADronePawn::CheckCrash()
 {
     float Impact =
@@ -571,7 +602,6 @@ void ADronePawn::CheckCrash()
     }
 }
 
-// ── Reset ─────────────────────────────────────────────────
 void ADronePawn::ResetDrone()
 {
     bCrashed = false;
@@ -583,6 +613,12 @@ void ADronePawn::ResetDrone()
     MissileCount = MaxMissiles;
     bAutoMode = false;
     bWaypointSet = false;
+    InputThrottle = 0.f;
+    InputPitch = 0.f;
+    InputRoll = 0.f;
+    InputYaw = 0.f;
+    LastWaypointDirection = FVector(1, 0, 0);
+    LastWaypointPosition = FVector::ZeroVector;
 
     SetActorLocation(FVector(0, 0, 100));
     SetActorRotation(FRotator::ZeroRotator);
@@ -593,7 +629,6 @@ void ADronePawn::ResetDrone()
     PID_Yaw.Reset();
 }
 
-// ── FPV ───────────────────────────────────────────────────
 void ADronePawn::ToggleFPV()
 {
     bIsFPV = !bIsFPV;
@@ -601,7 +636,6 @@ void ADronePawn::ToggleFPV()
     Camera->SetActive(!bIsFPV);
 }
 
-// ── Input ─────────────────────────────────────────────────
 void ADronePawn::SetupPlayerInputComponent(
     UInputComponent* PlayerInputComponent)
 {
@@ -633,19 +667,19 @@ void ADronePawn::SetupPlayerInputComponent(
 
 void ADronePawn::OnThrottle(float Val)
 {
-    InputThrottle = Val;
+    if (!bAutoMode) InputThrottle = Val;
 }
 void ADronePawn::OnPitch(float Val)
 {
-    InputPitch = Val;
+    if (!bAutoMode) InputPitch = Val;
 }
 void ADronePawn::OnRoll(float Val)
 {
-    InputRoll = Val;
+    if (!bAutoMode) InputRoll = Val;
 }
 void ADronePawn::OnYaw(float Val)
 {
-    InputYaw = Val;
+    if (!bAutoMode) InputYaw = Val;
 }
 
 float ADronePawn::GetSpeed() const

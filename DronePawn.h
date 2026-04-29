@@ -4,6 +4,8 @@
 #include "GameFramework/Pawn.h"
 #include "PIDController.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "GameFramework/SpringArmComponent.h"
+#include "Camera/CameraComponent.h"
 #include "DronePawn.generated.h"
 
 UCLASS()
@@ -25,7 +27,7 @@ protected:
     UPROPERTY(VisibleAnywhere, Category = "Drone")
         USkeletalMeshComponent* DroneMesh;
 
-    // ── Propellers Separate Skeletal Meshes ───────────────
+    // ── Propellers ────────────────────────────────────────
     UPROPERTY(VisibleAnywhere, Category = "Drone")
         USkeletalMeshComponent* Propeller_FL;
     UPROPERTY(VisibleAnywhere, Category = "Drone")
@@ -37,11 +39,11 @@ protected:
 
     // ── Cameras ───────────────────────────────────────────
     UPROPERTY(VisibleAnywhere, Category = "Drone")
-        class USpringArmComponent* SpringArm;
+        USpringArmComponent* SpringArm;
     UPROPERTY(VisibleAnywhere, Category = "Drone")
-        class UCameraComponent* Camera;
+        UCameraComponent* Camera;
     UPROPERTY(VisibleAnywhere, Category = "Drone")
-        class UCameraComponent* FPVCamera;
+        UCameraComponent* FPVCamera;
 
     // ── Physics ───────────────────────────────────────────
     UPROPERTY(EditAnywhere,
@@ -192,6 +194,11 @@ public:
     {
         return bObstacleBelow;
     }
+    UFUNCTION(BlueprintCallable)
+        bool IsBraking() const
+    {
+        return bBraking;
+    }
 
 private:
     // ── PIDs ──────────────────────────────────────────────
@@ -229,6 +236,7 @@ private:
     // ── State ─────────────────────────────────────────────
     bool bCrashed = false;
     bool bIsFPV = false;
+    bool bBraking = false;
 
     // ── Obstacle State ────────────────────────────────────
     bool bObstacleAhead = false;
@@ -246,6 +254,10 @@ private:
     bool    bAutoMode = false;
     FVector CurrentWaypoint = FVector::ZeroVector;
     bool    bWaypointSet = false;
+
+    // ── Waypoint Direction and Chain ──────────────────────
+    FVector LastWaypointDirection = FVector(1, 0, 0);
+    FVector LastWaypointPosition = FVector::ZeroVector;
 
     // ── Functions ─────────────────────────────────────────
     void CalculateRotorSpeeds(float DeltaTime);
@@ -266,6 +278,7 @@ private:
     void SetWaypointAhead();
     void SteerAroundObstacle();
     bool IsWaypointReached();
+    void OnBrake();
     void OnThrottle(float Val);
     void OnPitch(float Val);
     void OnRoll(float Val);
